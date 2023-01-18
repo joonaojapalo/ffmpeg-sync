@@ -4,28 +4,40 @@ Synchronize and trim bunch of consistently named videos.
 
 ## Usage
 
+Simple run:
 ```sh
-python .\ffmpeg-sync.py ..\preprocess\Subjects\S1\
+python .\ffmpeg-sync.py .\athletes
 ```
 
-Example directory contents of */path/to/video-directory*:
+Define configuration to use:
+```sh
+python .\ffmpeg-sync.py -c ..\my-conf.yml .\athletes
 ```
+
+Define output directory (default: output):
+```sh
+python .\ffmpeg-sync.py -o .\processed .\athletes
+```
+
+Example directory contents of `./athletes/athletel/:
+
+```
+athlete1_indices.xlsx
 athlete1_trial1_cam1.mp4
 athlete1_trial1_cam2.mp4
 athlete1_trial2_cam1.mp4
 athlete1_trial2_cam2.mp4
-athlete1_indicex.xlsx
 ```
 
+## Configuration
+
+A [YAML](https://yaml.org/) file `ffmpeg-sync.yml` defines configuration.
+Configuration includes camera ids and columns for Excel definition files.
+Please see example configuration file [ffmpeg-sync.yml](./examples/ffmpeg-sync.yml).
 
 ## *_indices.xlsx
 
-Trim and sync definitions are defined in a file called Excel file (.xlsx) and it must be located in */video-directory*.
+Trim and sync definitions are defined in an Excel file (*_indices.xlsx). It must be located in each video-directory beside video files. Headers that are defined in `ffmpeg-sync.yml` configuration file named must exists in `_indices.xlsx` file. Default header column names
+are: "Throw", "Camera" and "Frame".
 
-File fromat is
-
-```csv
-part1,part2,part3,video_name,sync_time,duration
-```
-
-Video name is constructed as `{part1}_{part2}_{part3}.mp4`.
+Input video names is constructed as `{subject}_{column1}_{column2}.mp4`.

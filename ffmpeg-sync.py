@@ -3,11 +3,14 @@ import os
 import sys
 import subprocess
 import glob
-import yaml
 from pprint import pprint
+import argparse
+from pathlib import Path
 
 from fps import parse_fps
 from index_xlsx import validate_xlsx, read_index_xlsx
+import config
+from shellcolors import print_ok, print_fail, print_warn, ShellColors
 
 # time format parser
 #import re
@@ -38,7 +41,7 @@ def ffmpeg_command_ts(inputfile, outputfile, ts0, ts1):
     ]
 
 
-#def ffmpeg_command_frames(inputfile, outputfile, start_frame, frames):
+# def ffmpeg_command_frames(inputfile, outputfile, start_frame, frames):
 #    bitrate = "48M"
 #    return [
 #        "ffmpeg",
@@ -52,17 +55,28 @@ def ffmpeg_command_ts(inputfile, outputfile, ts0, ts1):
 
 
 def glob_index_files(basepath):
+    glob_paths = glob.glob(os.path.join(basepath, "**", "*_indices.xlsx"))
+
+    if glob_paths:
+        print("\nValidating index files:")
+
     paths = []
-    for path in glob.glob(os.path.join(basepath, "**", "*_indices.xlsx")):
-        print("Validating index file: %s" % path)
-        if not validate_xlsx(path):
-            print("Cannot open: %s" % path)
-            continue
-        paths.append(path)
+    for path in glob_paths:
+        print("  %s" % path)
+        validation_msgs = validate_xlsx(path)
+        if not validation_msgs:
+            paths.append(path)
+        else:
+            for msg in validation_msgs:
+                if msg.find("Cannot open") >= 0 and msg.find("~"):
+                    # case Excel temp file -> ignore warning
+                    pass
+                else:
+                    print_warn(msg)
     return paths
 
 
-#def parse_time(time_str):
+# def parse_time(time_str):
 #    m = time_re_short.match(time_str)
 #    if m:
 #        [sec, ms] = m.groups()
@@ -76,7 +90,7 @@ def glob_index_files(basepath):
 #    return ts
 
 
-#def listfile_parse_line(line):
+# def listfile_parse_line(line):
 #    """Parse Synclist (cvs).
 #
 #       Returns:
@@ -101,16 +115,10 @@ def glob_index_files(basepath):
 #    return [input_file, output_file, sync_def, dt]
 
 
-def read_conf(path="."):
-    fn = os.path.join(path, "ffmpeg-sync.yml")
-    with open(fn) as fd:
-        if os.path.isfile(fn):
-            return yaml.load(fd, Loader=yaml.Loader)
-
-
 def input_boolean_prompt(prompt_str):
     while True:
-        answer = input(prompt_str + " ").lower()
+        answer = input(ShellColors.BOLD + prompt_str +
+                       " " + ShellColors.ENDC).lower()
         if answer == 'y':
             return True
         elif answer in ['n', '']:
@@ -118,36 +126,49 @@ def input_boolean_prompt(prompt_str):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("  Input directory (containing Synclist.csv) missing!")
-        sys.exit(1)
+    parser = argparse.ArgumentParser("ffmpeg-sync")
+    parser.add_argument("input_dir")
+    parser.add_argument("-c", "--config", default=".",)
+    parser.add_argument("-o", "--output", default="output")
+    args = parser.parse_args()
 
-    conf = read_conf()
+    conf = config.read_conf(args.config)
     if conf:
-        print("Using config:")
-        pprint(conf)
+        cfg_file = config.get_config_path(args.config)
+        print("Using config: %s" % os.path.realpath(cfg_file))
 
-    base_dir = sys.argv[1]
-    index_file_paths = glob_index_files(base_dir)
+    # read excel configuration
+    xlsx_cols = config.read_xlsx_cols(conf)
 
+    index_file_paths = glob_index_files(args.input_dir)
     cmds = []
 
     for indexfile_path in index_file_paths:
-        data, headers = read_index_xlsx(indexfile_path)
-        pprint(data)
+        try:
+            data, headers = read_index_xlsx(indexfile_path, xlsx_cols)
+        except Exception as e:
+            print_fail(e)
+            sys.exit(1)
+
+        if len(data):
+            print("\nPreparing video cut & synchronize tasks:")
+        else:
+            print("\nNo data found from file:", indexfile_path)
+
         for [trial_id, camera_id, frame] in data:
             path_parts = indexfile_path.split(os.path.sep)[:-1]
             subject_dir = path_parts[-1]
             base_dir = os.path.sep.join(path_parts)
             fn_template = "%s_%s_%s" % (subject_dir, trial_id, camera_id)
             input_path = os.path.join(base_dir, "%s.mp4" % (fn_template))
-            output_path = os.path.join("output", "%s-sync.mp4" % (fn_template))
+            output_path = os.path.join(args.output, "%s-sync.mp4" % (fn_template))
+
             if os.path.isfile(input_path):
                 capture_fps = int(
-                    conf["cameras"][camera_id]["fps"]) if conf else 240
+                    conf["cameras"][camera_id]["fps"]) if conf else 50
                 playback_fps = parse_fps(input_path)
 
-                print("Procesing '%s' (capture_fps=%i, playback_fps=%.2f)" %
+                print("  File '%s' (capture_fps=%i, playback_fps=%.2f)" %
                       (input_path, capture_fps, playback_fps))
                 ts = 1000 * frame / playback_fps
                 tot_frames = (1000 * 2 * capture_fps) / playback_fps
@@ -159,9 +180,10 @@ if __name__ == "__main__":
                 cmds.append(cmd)
 
     if len(cmds) == 0:
+        print_warn("\nNo commands to excecute")
         sys.exit(0)
 
-    print("Commands:")
+    print("\nCommands:")
     for cmd in cmds:
         print("  " + " ".join(cmd))
     print()
@@ -170,8 +192,22 @@ if __name__ == "__main__":
         sys.exit(0)
 
     print("\nStart executing commands...\n")
+
+    # ensure output dir
+    Path(args.output).mkdir(parents=True, exist_ok=True)
+
+    errors = []
     for cmd in cmds:
         print(" ".join(cmd))
         p = subprocess.run(cmd, shell=True)
         if p.returncode != 0:
             print("ERROR in ffmpeg processing")
+            errors.append({"return_code": p.returncode, "command": cmd})
+
+    if errors:
+        print("\nErrors occured:")
+        for err in errors:
+            print("  (return code: %i) -- %s" %
+                  (err["return_code"], err["command"]))
+    else:
+        print_ok("Success!")
